@@ -2,7 +2,7 @@ import asyncio
 import sys
 
 if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 import json
 import time
@@ -46,6 +46,76 @@ def _calculate_health_score(results: list) -> int:
     return max(0, min(100, score))
 
 
+def calculate_business_impact(
+    label: str,
+    category: str,
+    days_broken: int = 0,
+) -> dict:
+    score = 0
+
+    # Zone weight
+    zone_weights = {
+        "CTA": 40,
+        "Navigation": 30,
+        "Header": 25,
+        "Body text": 15,
+        "Footer": 10,
+        "Other": 5,
+        "Dead CTA": 35,
+    }
+    score += zone_weights.get(category, 5)
+
+    # How long broken
+    if days_broken > 14:
+        score += 30
+    elif days_broken > 7:
+        score += 20
+    elif days_broken > 3:
+        score += 15
+    elif days_broken > 1:
+        score += 10
+    else:
+        score += 5
+
+    # Label weight
+    if label == "broken":
+        score += 30
+    elif label == "dead_cta":
+        score += 25
+    elif label == "error":
+        score += 20
+
+    # Classify
+    if score >= 80:
+        return {
+            "score": score,
+            "level": "Critical",
+            "color": "#f87171",
+            "description": "Fix immediately \u2014 high traffic area",
+        }
+    elif score >= 55:
+        return {
+            "score": score,
+            "level": "High",
+            "color": "#fb923c",
+            "description": "Fix this week",
+        }
+    elif score >= 30:
+        return {
+            "score": score,
+            "level": "Medium",
+            "color": "#fbbf24",
+            "description": "Fix when convenient",
+        }
+    else:
+        return {
+            "score": score,
+            "level": "Low",
+            "color": "#94a3b8",
+            "description": "Low priority",
+        }
+
+
 @app.get("/scan")
 async def scan(
     url: str = Query(..., description="URL to scan"),
@@ -79,6 +149,15 @@ async def scan(
                 await asyncio.sleep(0.1)
                 results = await process_suggestions(results)
 
+            # Calculate business impact for actionable links
+            for r in results:
+                if r.label in ["broken", "dead_cta", "error"]:
+                    r.impact = calculate_business_impact(
+                        label=r.label,
+                        category=r.category,
+                        days_broken=0,
+                    )
+
             # Calculate health score
             health_score = _calculate_health_score(results)
 
@@ -111,6 +190,63 @@ async def history(
         from database import get_site_history
         data = await get_site_history(url, email)
         return {"url": url, "history": data}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/register")
+async def register(
+    url: str = Query(..., description="Site URL to track"),
+    email: str = Query(..., description="User email"),
+):
+    """Register a site for tracking."""
+    from database import _get_client
+    import asyncio as _asyncio
+
+    def _register():
+        client = _get_client()
+        client.table("sites").upsert({
+            "url": url,
+            "user_email": email,
+        }, on_conflict="url,user_email").execute()
+        return {"registered": True}
+
+    try:
+        result = await _asyncio.to_thread(_register)
+        return result
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/uptime")
+async def uptime(url: str = Query(...)):
+    try:
+        from database import get_uptime
+        data = await get_uptime(url)
+        return {"url": url, "issues": data}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/dashboard")
+async def dashboard_data():
+    import asyncio as _asyncio
+
+    def _get_dashboard():
+        from database import _get_client
+        client = _get_client()
+
+        # Get all sites with their latest scan
+        sites = client.table("sites")\
+            .select("*, scans(id, scanned_at, total_links, broken_count, dead_cta_count, health_score)")\
+            .order("last_scanned_at", desc=True)\
+            .execute()
+
+        return sites.data
+
+    try:
+        data = await _asyncio.to_thread(_get_dashboard)
+        return {"sites": data}
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 

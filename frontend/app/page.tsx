@@ -11,6 +11,21 @@ import ResultsTable from "@/components/ResultsTable";
 import HealthScore from "@/components/HealthScore";
 import SummaryBanner from "@/components/SummaryBanner";
 import PagePreviewCard from "@/components/PagePreviewCard";
+import ScanHistoryPanel from "@/components/ScanHistoryPanel";
+import WhatChangedCard from "@/components/WhatChangedCard";
+import TrackingBanner from "@/components/TrackingBanner";
+import NavBar from "@/components/NavBar";
+
+// ─── History scan entry type ──────────────────────────────────────────────────
+interface HistoryScanEntry {
+  id: string;
+  scanned_at: string;
+  total_links: number;
+  broken_count: number;
+  dead_cta_count: number;
+  health_score: number;
+  results_json: LinkResult[];
+}
 
 // ─── Health score calculator (mirrored from HealthScore component) ─────────────
 function calcScore(results: LinkResult[]): number {
@@ -76,6 +91,11 @@ export default function HomePage() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const scanningRef = useRef(false);
 
+  // ─── History state ─────────────────────────────────────────────────────────
+  const [history, setHistory] = useState<HistoryScanEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const historyPanelRef = useRef<HTMLElement>(null);
+
   // Dynamic page title
   useEffect(() => {
     if (scanning) {
@@ -119,6 +139,8 @@ export default function HomePage() {
       setZoneFilter("All zones");
       setCheckedCount(0);
       setTotalCount(0);
+      setHistory([]);
+      setHistoryLoading(false);
 
       // Close any existing connection
       eventSourceRef.current?.close();
@@ -215,10 +237,42 @@ export default function HomePage() {
     if (scanMeta) startScan(scanMeta.scannedUrl);
   }, [scanMeta, startScan]);
 
+  // ─── Fetch history after scan completes ────────────────────────────────────
+  useEffect(() => {
+    if (!scanComplete || results.length === 0 || !scanMeta) return;
+
+    const fetchHistory = async () => {
+      setHistoryLoading(true);
+      try {
+        const res = await fetch(
+          `/api/history?url=${encodeURIComponent(scanMeta.scannedUrl)}`
+        );
+        if (res.ok) {
+          const data = (await res.json()) as { history?: HistoryScanEntry[] };
+          // Exclude the current scan (most recent) since it IS the current scan
+          const allHistory = data.history ?? [];
+          // The first entry is the most recent scan we just did — skip it
+          setHistory(allHistory.length > 1 ? allHistory.slice(1) : []);
+        }
+      } catch {
+        // Non-critical — silently ignore
+      } finally {
+        setHistoryLoading(false);
+      }
+    };
+
+    fetchHistory();
+  }, [scanComplete, results.length, scanMeta]);
+
+  const scrollToHistory = useCallback(() => {
+    historyPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
   return (
     <main className="min-h-screen relative overflow-hidden">
+      <NavBar />
       {/* ── HERO SECTION ── */}
-      <section className="relative pt-20 pb-8 noise-overlay overflow-hidden">
+      <section className="relative pt-28 pb-8 noise-overlay overflow-hidden">
         {/* Particle dot background */}
         <div
           style={{
@@ -319,10 +373,26 @@ export default function HomePage() {
             <PagePreviewCard meta={scanMeta} onRescan={handleRescan} />
           )}
 
+          {/* Tracking banner — only if no history */}
+          {scanMeta && (
+            <TrackingBanner
+              scannedUrl={scanMeta.scannedUrl}
+              hasHistory={history.length > 0}
+            />
+          )}
+
           {/* Health score */}
           <section className="relative z-10">
             <HealthScore results={results} />
           </section>
+
+          {/* What Changed diff card — between health score and summary */}
+          {history.length > 0 && (
+            <WhatChangedCard
+              currentResults={results}
+              history={history}
+            />
+          )}
 
           {/* Summary banner */}
           <section className="relative z-10">
@@ -351,14 +421,22 @@ export default function HomePage() {
           </section>
 
           {/* Results table */}
-          <section className="relative z-10 pb-20">
+          <section className="relative z-10">
             <ResultsTable
               results={filteredResults}
               sortOption={sortOption}
               scannedUrl={scanMeta?.scannedUrl ?? url}
               healthScore={healthScore}
+              onScrollToHistory={scrollToHistory}
             />
           </section>
+
+          {/* Scan History Panel */}
+          <ScanHistoryPanel
+            ref={historyPanelRef}
+            history={history}
+            loading={historyLoading}
+          />
         </>
       )}
 

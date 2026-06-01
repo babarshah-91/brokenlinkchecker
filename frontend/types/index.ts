@@ -34,6 +34,16 @@ export interface LinkResult {
   found_on?: string
   priority?: LinkPriority
   suggestion?: LinkSuggestion | null
+  impact?: BusinessImpact
+  first_seen_at?: string
+  days_broken?: number
+}
+
+export interface BusinessImpact {
+  score: number
+  level: 'Critical' | 'High' | 'Medium' | 'Low'
+  color: string
+  description: string
 }
 
 export type ZoneFilter =
@@ -56,4 +66,21 @@ export interface ScanMeta {
   scannedUrl: string
   scannedAt: Date
   pageTitle?: string
+}
+
+export interface DashboardScan {
+  id: string
+  scanned_at: string
+  total_links: number
+  broken_count: number
+  dead_cta_count: number
+  health_score: number
+}
+
+export interface DashboardSite {
+  id: string
+  url: string
+  user_email: string
+  last_scanned_at: string
+  scans: DashboardScan[]
 }

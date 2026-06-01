@@ -202,7 +202,7 @@ def _scrape_sync(url: str) -> list[RawLink]:
             )
         )
         page = context.new_page()
-        page.goto(url, wait_until="networkidle", timeout=30000)
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
         html = page.content()
         browser.close()
 
@@ -228,7 +228,6 @@ def _scrape_sync(url: str) -> list[RawLink]:
                     is_external=urlparse(absolute).netloc != urlparse(url).netloc,
                     priority=ZONE_PRIORITY.get(zone, "low"),
                 ))
-
     for tag in soup.find_all("a", href=True):
         href = urljoin(url, tag["href"].strip())
         if href not in seen_hrefs and href.startswith("http"):
@@ -241,7 +240,7 @@ def _scrape_sync(url: str) -> list[RawLink]:
                 is_external=urlparse(href).netloc != urlparse(url).netloc,
                 priority="low",
             ))
-
+            priority="low",
     dead_ctas = _find_dead_ctas(soup, url)
     results.extend(dead_ctas)
     return results

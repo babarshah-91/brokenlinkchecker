@@ -10,11 +10,14 @@ import {
   ChevronUp,
   Ghost,
   AlertCircle,
+  Clock,
+  Zap,
 } from "lucide-react";
 import { LinkResult, SortOption } from "@/types";
 import StatusPill from "./StatusPill";
 import ExportButton from "./ExportButton";
 import PriorityBadge from "./PriorityBadge";
+import BusinessImpactBadge from "./BusinessImpactBadge";
 import SuggestionCard from "./SuggestionCard";
 import RedirectDownloadButton from "./RedirectDownload";
 
@@ -23,6 +26,7 @@ interface ResultsTableProps {
   sortOption: SortOption;
   scannedUrl?: string;
   healthScore?: number;
+  onScrollToHistory?: () => void;
 }
 
 // ─── Zone config ─────────────────────────────────────────────────────────────
@@ -44,6 +48,18 @@ const ZONE_DOT_COLORS: Record<string, string> = {
   "Body text": "#e2e8f0",
   Other: "#64748b",
   "Dead CTA": "#f87171",
+};
+
+// ─── Uptime helper ────────────────────────────────────────────────────────────
+function getDaysBroken(firstSeenAt: string): number {
+  const first = new Date(firstSeenAt);
+  const now = new Date();
+  return Math.floor((now.getTime() - first.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+// ─── Impact factor labels ─────────────────────────────────────────────────────
+const ZONE_WEIGHTS: Record<string, number> = {
+  CTA: 40, Navigation: 30, Header: 25, "Body text": 15, Footer: 10, Other: 5, "Dead CTA": 35,
 };
 
 // ─── Row status styling ───────────────────────────────────────────────────────
@@ -68,6 +84,152 @@ const LABEL_WEIGHT: Record<string, number> = {
   error: 5,
   ok: 6,
 };
+
+// ─── Impact detail card for expanded rows ─────────────────────────────────────
+function ImpactDetailCard({
+  impact,
+  category,
+  label,
+  daysBroken,
+}: {
+  impact: { score: number; level: string; color: string; description: string };
+  category: string;
+  label: string;
+  daysBroken: number;
+}) {
+  const [showWhy, setShowWhy] = useState(false);
+
+  const zoneScore = ZONE_WEIGHTS[category] ?? 5;
+  let timeScore = 5;
+  if (daysBroken > 14) timeScore = 30;
+  else if (daysBroken > 7) timeScore = 20;
+  else if (daysBroken > 3) timeScore = 15;
+  else if (daysBroken > 1) timeScore = 10;
+
+  let severityScore = 20;
+  let severityLabel = "Error";
+  if (label === "broken") { severityScore = 30; severityLabel = "Broken link"; }
+  else if (label === "dead_cta") { severityScore = 25; severityLabel = "Dead CTA"; }
+
+  return (
+    <div
+      className="rounded-xl px-4 py-3 mt-1"
+      style={{
+        background: "rgba(255,255,255,0.03)",
+        border: `1px solid ${impact.color}22`,
+      }}
+    >
+      <div className="flex items-center gap-3 mb-2">
+        <Zap size={14} style={{ color: impact.color }} />
+        <span
+          style={{
+            fontFamily: "var(--font-poppins), Poppins, sans-serif",
+            fontSize: "13px",
+            fontWeight: 600,
+            color: impact.color,
+          }}
+        >
+          {impact.level} Impact
+        </span>
+        <span
+          style={{
+            fontFamily: "var(--font-poppins), Poppins, sans-serif",
+            fontSize: "12px",
+            fontWeight: 400,
+            color: "rgba(255,255,255,0.4)",
+          }}
+        >
+          {impact.score}/100
+        </span>
+      </div>
+      <p
+        style={{
+          fontFamily: "var(--font-poppins), Poppins, sans-serif",
+          fontSize: "12px",
+          color: "rgba(255,255,255,0.5)",
+          margin: 0,
+          marginBottom: 6,
+        }}
+      >
+        {impact.description}
+      </p>
+      <button
+        onClick={(e) => { e.stopPropagation(); setShowWhy(!showWhy); }}
+        className="cursor-pointer"
+        style={{
+          background: "none",
+          border: "none",
+          padding: 0,
+          fontFamily: "var(--font-poppins), Poppins, sans-serif",
+          fontSize: "11px",
+          fontWeight: 500,
+          color: "rgba(255,255,255,0.3)",
+          textDecoration: "underline",
+          textDecorationStyle: "dotted" as const,
+          textUnderlineOffset: "3px",
+        }}
+      >
+        {showWhy ? "Hide breakdown" : "Why this score?"}
+      </button>
+      {showWhy && (
+        <div className="mt-2 flex flex-col gap-1">
+          {[
+            { label: `Zone: ${category}`, value: `+${zoneScore}`, color: "#60a5fa" },
+            { label: `Time broken: ${daysBroken} days`, value: `+${timeScore}`, color: "#fbbf24" },
+            { label: `Severity: ${severityLabel}`, value: `+${severityScore}`, color: "#f87171" },
+          ].map((f) => (
+            <div key={f.label} className="flex items-center justify-between">
+              <span
+                style={{
+                  fontFamily: "var(--font-poppins), Poppins, sans-serif",
+                  fontSize: "11px",
+                  color: "rgba(255,255,255,0.4)",
+                }}
+              >
+                {f.label}
+              </span>
+              <span
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  color: f.color,
+                }}
+              >
+                {f.value}
+              </span>
+            </div>
+          ))}
+          <div
+            className="flex items-center justify-between mt-1 pt-1"
+            style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}
+          >
+            <span
+              style={{
+                fontFamily: "var(--font-poppins), Poppins, sans-serif",
+                fontSize: "11px",
+                fontWeight: 600,
+                color: "rgba(255,255,255,0.6)",
+              }}
+            >
+              Total
+            </span>
+            <span
+              style={{
+                fontFamily: "monospace",
+                fontSize: "11px",
+                fontWeight: 700,
+                color: impact.color,
+              }}
+            >
+              {impact.score}/100 → {impact.level}
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── Expandable row detail ────────────────────────────────────────────────────
 function RowDetail({ result }: { result: LinkResult }) {
@@ -96,7 +258,7 @@ function RowDetail({ result }: { result: LinkResult }) {
       transition={{ duration: 0.15 }}
     >
       <td
-        colSpan={7}
+        colSpan={8}
         style={{ padding: 0, borderBottom: "1px solid rgba(255,255,255,0.06)" }}
       >
         <div
@@ -201,6 +363,34 @@ function RowDetail({ result }: { result: LinkResult }) {
             </span>
           </div>
 
+          {/* Uptime indicator */}
+          {result.first_seen_at && (result.label === "broken" || result.label === "dead_cta" || result.label === "error") && (
+            <div className="flex items-center gap-2">
+              <span
+                style={{
+                  fontSize: "11px",
+                  color: "rgba(255,255,255,0.4)",
+                  fontFamily: "var(--font-poppins), Poppins, sans-serif",
+                }}
+              >
+                Broken for: {getDaysBroken(result.first_seen_at)} days
+              </span>
+              {getDaysBroken(result.first_seen_at) > 7 && (
+                <span style={{ color: "#f87171", fontSize: "11px" }}>⚠️ Long-standing issue</span>
+              )}
+            </div>
+          )}
+
+          {/* Business Impact Card */}
+          {result.impact && (
+            <ImpactDetailCard
+              impact={result.impact}
+              category={result.category}
+              label={result.label}
+              daysBroken={result.first_seen_at ? getDaysBroken(result.first_seen_at) : 0}
+            />
+          )}
+
           {/* AI Suggestion Card (Upgrade 3) */}
           {result.suggestion && (
             <SuggestionCard suggestion={result.suggestion} />
@@ -240,6 +430,7 @@ export default function ResultsTable({
   sortOption,
   scannedUrl = "",
   healthScore = 0,
+  onScrollToHistory,
 }: ResultsTableProps) {
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
@@ -415,6 +606,20 @@ export default function ResultsTable({
             Results
           </h3>
           <div className="flex items-center gap-2">
+            {onScrollToHistory && (
+              <button
+                onClick={onScrollToHistory}
+                className="glass-card inline-flex items-center gap-2 px-4 py-2 text-white/60 hover:text-white transition-colors cursor-pointer"
+                style={{
+                  fontFamily: "var(--font-poppins), Poppins, sans-serif",
+                  fontWeight: 500,
+                  fontSize: "13px",
+                }}
+              >
+                <Clock size={14} />
+                History
+              </button>
+            )}
             <RedirectDownloadButton results={results} />
             <ExportButton
               results={results}
@@ -429,7 +634,7 @@ export default function ResultsTable({
           <table className="w-full min-w-[760px]">
             <thead>
               <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                {["Status", "Priority", "Link Text", "URL", "Where on Page", "Time", ""].map(
+                {["Status", "Priority", "Impact", "Link Text", "URL", "Where on Page", "Time", ""].map(
                   (col) => (
                     <th
                       key={col}
@@ -482,7 +687,7 @@ export default function ResultsTable({
                         "rgba(255,255,255,0.025)";
                     }}
                   >
-                    <td colSpan={7} style={{ padding: "8px 16px" }}>
+                    <td colSpan={8} style={{ padding: "8px 16px" }}>
                       <div className="flex items-center gap-3">
                         <span
                           className="w-2 h-2 rounded-full shrink-0"
@@ -589,6 +794,15 @@ export default function ResultsTable({
                             {/* Priority */}
                             <td style={{ padding: "10px 16px", verticalAlign: "middle" }}>
                               <PriorityBadge priority={result.priority} />
+                            </td>
+
+                            {/* Impact */}
+                            <td style={{ padding: "10px 16px", verticalAlign: "middle" }}>
+                              {result.impact ? (
+                                <BusinessImpactBadge impact={result.impact} />
+                              ) : (
+                                <span style={{ color: "rgba(255,255,255,0.15)", fontSize: "12px" }}>—</span>
+                              )}
                             </td>
 
                             {/* Link text */}

@@ -18,3 +18,6 @@ class LinkResult(RawLink):
     response_ms: int = 0
     error: Optional[str] = None
     suggestion: Optional[dict] = None
+    impact: Optional[dict] = None
+    first_seen_at: Optional[str] = None
+    days_broken: Optional[int] = None

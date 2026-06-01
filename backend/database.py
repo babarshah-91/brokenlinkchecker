@@ -1,32 +1,29 @@
-﻿import os
-from supabase import create_client, Client
+import os
+import threading
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("Missing SUPABASE_URL or SUPABASE_KEY in .env")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+def _get_client():
+    from supabase import create_client
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
-async def save_scan(
-    site_url: str,
-    user_email: str,
-    results: list,
-    health_score: int,
-) -> dict:
+def _save_scan_sync(site_url, user_email, results, health_score):
+    client = _get_client()
+    
     total = len(results)
     broken = sum(1 for r in results if r.label == "broken")
     dead_cta = sum(1 for r in results if r.label == "dead_cta")
     redirect = sum(1 for r in results if r.label == "redirect")
     blocked = sum(1 for r in results if r.label == "blocked")
 
-    # Upsert site
-    site_resp = supabase.table("sites").upsert({
+    # Insert site
+    site_resp = client.table("sites").upsert({
         "url": site_url,
         "user_email": user_email,
         "last_scanned_at": "now()",
@@ -35,7 +32,7 @@ async def save_scan(
     site_id = site_resp.data[0]["id"]
 
     # Save scan
-    scan_resp = supabase.table("scans").insert({
+    scan_resp = client.table("scans").insert({
         "site_id": site_id,
         "total_links": total,
         "broken_count": broken,
@@ -48,47 +45,116 @@ async def save_scan(
 
     scan_id = scan_resp.data[0]["id"]
 
-    # Save individual issues
-    issues = []
+    # Save issues with uptime tracking
     for r in results:
         if r.label in ["broken", "dead_cta", "error"]:
-            issues.append({
-                "site_id": site_id,
-                "scan_id": scan_id,
-                "url": r.url,
-                "label": r.label,
-                "category": r.category,
-                "anchor_text": r.anchor_text,
-                "status_code": r.status_code,
-            })
+            # Check if already exists
+            existing = client.table("link_issues")\
+                .select("id")\
+                .eq("site_id", site_id)\
+                .eq("url", r.url)\
+                .is_("resolved_at", "null")\
+                .execute()
 
-    if issues:
-        supabase.table("link_issues").insert(issues).execute()
+            if existing.data:
+                # Update last_seen
+                client.table("link_issues")\
+                    .update({"last_seen_at": "now()", "is_new": False})\
+                    .eq("id", existing.data[0]["id"])\
+                    .execute()
+            else:
+                # New issue
+                client.table("link_issues").insert({
+                    "site_id": site_id,
+                    "scan_id": scan_id,
+                    "url": r.url,
+                    "label": r.label,
+                    "category": r.category,
+                    "anchor_text": r.anchor_text,
+                    "status_code": r.status_code,
+                    "is_new": True,
+                }).execute()
 
+    # Mark resolved issues
+    all_current_broken = {
+        r.url for r in results
+        if r.label in ["broken", "dead_cta", "error"]
+    }
+    open_issues = client.table("link_issues")\
+        .select("id, url")\
+        .eq("site_id", site_id)\
+        .is_("resolved_at", "null")\
+        .execute()
+
+    for issue in open_issues.data:
+        if issue["url"] not in all_current_broken:
+            client.table("link_issues")\
+                .update({"resolved_at": "now()"})\
+                .eq("id", issue["id"])\
+                .execute()
+
+    print(f"[DB] Saved scan for {site_url} — {total} links, score {health_score}")
     return {"site_id": site_id, "scan_id": scan_id}
 
 
-async def get_previous_scan(site_id: str) -> dict | None:
-    resp = supabase.table("scans")\
-        .select("*")\
-        .eq("site_id", site_id)\
-        .order("scanned_at", desc=True)\
-        .limit(2)\
-        .execute()
+def save_scan_threaded(site_url, user_email, results, health_score):
+    """Run in a completely separate thread — no asyncio involvement."""
+    result_container = {}
+    error_container = {}
 
-    if len(resp.data) < 2:
-        return None
+    def run():
+        try:
+            result_container["data"] = _save_scan_sync(
+                site_url, user_email, results, health_score
+            )
+        except Exception as e:
+            error_container["err"] = e
+            print(f"[DB] Save failed: {e}")
 
-    return resp.data[1]  # second most recent = previous
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout=15)  # wait max 15 seconds
+
+    if "err" in error_container:
+        raise error_container["err"]
+    return result_container.get("data", {})
 
 
-async def get_site_history(site_url: str, user_email: str) -> list:
-    resp = supabase.table("scans")\
-        .select("*, sites!inner(url, user_email)")\
+async def save_scan(site_url, user_email, results, health_score):
+    """Async wrapper that runs DB save in a real thread."""
+    import asyncio
+    return await asyncio.to_thread(
+        save_scan_threaded, site_url, user_email, results, health_score
+    )
+
+
+def _get_uptime_sync(site_url: str) -> list:
+    client = _get_client()
+
+    resp = client.table("link_issues")\
+        .select("url, label, category, anchor_text, first_seen_at, last_seen_at, is_new, sites!inner(url)")\
         .eq("sites.url", site_url)\
-        .eq("sites.user_email", user_email)\
-        .order("scanned_at", desc=True)\
-        .limit(30)\
+        .is_("resolved_at", "null")\
+        .order("first_seen_at", desc=False)\
         .execute()
 
     return resp.data
+
+
+async def get_uptime(site_url: str) -> list:
+    import asyncio
+    return await asyncio.to_thread(_get_uptime_sync, site_url)
+
+async def get_site_history(site_url, user_email):
+    def _get():
+        client = _get_client()
+        resp = client.table("scans")\
+            .select("*, sites!inner(url, user_email)")\
+            .eq("sites.url", site_url)\
+            .eq("sites.user_email", user_email)\
+            .order("scanned_at", desc=True)\
+            .limit(30)\
+            .execute()
+        return resp.data
+    import asyncio
+    return await asyncio.to_thread(_get)
