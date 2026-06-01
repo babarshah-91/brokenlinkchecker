@@ -133,7 +133,7 @@ export default function DashboardPage() {
         const site = sites.find(s => s.id === id);
         setFeed(prev => [{
           id: Date.now().toString(),
-          type: "success",
+          type: "success" as const,
           siteName: site?.name || site?.url || "Site",
           description: "Manual scan completed",
           context: "Initiated from dashboard",

@@ -66,7 +66,7 @@ export default function RedirectDownloadButton({ results }: RedirectDownloadProp
         { name: "redirects.csv", content: csvContent },
       ]);
 
-      const blob = new Blob([zip], { type: "application/zip" });
+      const blob = new Blob([zip as any], { type: "application/zip" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
