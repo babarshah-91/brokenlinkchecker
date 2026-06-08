@@ -7,6 +7,8 @@ if sys.platform == "win32":
 import json
 import time
 import base64
+import os
+import httpx
 
 from fastapi import FastAPI, Query
 from models import LinkResult, SiteCreate
@@ -33,6 +35,120 @@ app.add_middleware(
 # ─── Screenshot cache ─────────────────────────────────────────────────────────
 _preview_cache: dict[str, tuple[str, float]] = {}
 _PREVIEW_CACHE_TTL = 600  # 10 minutes
+
+
+async def send_slack_notification(
+    url: str,
+    health_score: int,
+    results: list
+) -> None:
+    webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+    if not webhook_url:
+        return
+    
+    total = len(results)
+    broken = sum(1 for r in results if r.label == "broken")
+    dead_cta = sum(1 for r in results if r.label == "dead_cta")
+    blocked = sum(1 for r in results if r.label == "blocked")
+    
+    # Health score emoji
+    if health_score >= 90:
+        emoji = "✅"
+        color = "#2eb886"
+    elif health_score >= 70:
+        emoji = "⚠️"
+        color = "#e6a817"
+    else:
+        emoji = "🔴"
+        color = "#cc0000"
+    
+    # Build broken links list
+    broken_links = [r for r in results if r.label == "broken"]
+    broken_text = ""
+    if broken_links:
+        broken_text = "\n".join([
+            f"• <{r.url}|{r.anchor_text or r.url[:50]}> — {r.category}"
+            for r in broken_links[:5]
+        ])
+        if len(broken_links) > 5:
+            broken_text += f"\n• ...and {len(broken_links) - 5} more"
+    
+    payload = {
+        "attachments": [
+            {
+                "color": color,
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": f"{emoji} LinkSpy Scan Report"
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "fields": [
+                            {
+                                "type": "mrkdwn",
+                                "text": f"*Site:*\n<{url}|{url}>"
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": f"*Health Score:*\n{health_score}/100"
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": f"*Total Links:*\n{total}"
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": f"*Broken Links:*\n{broken}"
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": f"*Dead CTAs:*\n{dead_cta}"
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": f"*Can't Verify:*\n{blocked}"
+                            }
+                        ]
+                    },
+                    *(
+                        [
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f"*Broken Links Found:*\n{broken_text}"
+                                }
+                            }
+                        ] if broken_text else []
+                    ),
+                    {
+                        "type": "actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "text": {
+                                    "type": "plain_text",
+                                    "text": "View Full Report"
+                                },
+                                "url": f"https://brokenlinkchecker-olive.vercel.app?url={url}",
+                                "style": "primary"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(webhook_url, json=payload, timeout=5.0)
+    except Exception as e:
+        print(f"[Slack] Failed to send notification: {e}")
 
 
 def _calculate_health_score(results: list) -> int:
@@ -172,6 +288,8 @@ async def scan(
                 )
             except Exception as db_err:
                 print(f"[DB] Save failed (non-critical): {db_err}")
+
+            await send_slack_notification(url, health_score, results)
 
             yield f"data: {json.dumps({'type': 'result', 'data': [r.dict() for r in results], 'health_score': health_score})}\n\n"
 
